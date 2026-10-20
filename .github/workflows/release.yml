@@ -1,0 +1,46 @@
+name: Build and release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build packages
+        run: python build.py
+      - name: Check package integrity
+        run: |
+          python - <<'PY'
+          import json, pathlib, zipfile
+          version=json.loads(pathlib.Path('Quellcode/manifest.json').read_text())['human_version']
+          for file in pathlib.Path('Versionen',version).glob('*.zip'):
+              with zipfile.ZipFile(file) as z: assert z.testzip() is None
+          with zipfile.ZipFile('Notion_Safe_Sync.ankiaddon') as z:
+              assert z.testzip() is None
+              assert json.loads(z.read('config.json'))=={'NOTION_TOKEN':'','PAGES':[]}
+              assert json.loads(z.read('manifest.json'))['human_version']==version
+              assert 'card_interactions.js' in z.namelist()
+              assert not any(n.startswith('test_') for n in z.namelist())
+          PY
+      - name: Publish new version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          VERSION=$(python -c "import json; print(json.load(open('Quellcode/manifest.json'))['human_version'])")
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Version $VERSION already published; keeping existing release."
+            exit 0
+          fi
+          gh release create "v$VERSION" "Versionen/$VERSION/Notion_Safe_Sync.ankiaddon" "Versionen/$VERSION/Notion_Safe_Sync_Quellcode.zip" --target "$GITHUB_SHA" --title "Notion Safe Sync $VERSION" --notes-file CHANGELOG.md
